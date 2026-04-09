@@ -28,4 +28,6 @@ func init() {
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(commitCmd)
 	rootCmd.AddCommand(networkCmd)
+	rootCmd.AddCommand(restartCmd)
+	rootCmd.AddCommand(inspectCmd)
 }

@@ -54,12 +54,12 @@ func NewParentProcess(tty bool, containerName, volume, imageName string, envSlic
 	cmd.ExtraFiles = []*os.File{readPipe}
 	cmd.Env = append(os.Environ(), envSlice...)
 
-	// 创建容器文件系统
-	if err := NewWorkSpace(volume, imageName, containerName); err != nil {
+	// 创建容器文件系统（参数顺序: containerID, imageName, volume）
+	if err := NewWorkSpace(containerName, imageName, volume); err != nil {
 		log.Errorf("New work space error %v", err)
 		return nil, nil
 	}
-	cmd.Dir = fmt.Sprintf(MntUrl, containerName)
+	cmd.Dir = fmt.Sprintf(MergedDir, containerName)
 
 	return cmd, writePipe
 }

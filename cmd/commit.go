@@ -28,9 +28,8 @@ var commitCmd = &cobra.Command{
 
 // commitContainer 提交容器为镜像
 func commitContainer(containerName, imageName string) {
-	mntURL := fmt.Sprintf(container.MntUrl, containerName)
-	mntURL += "/*"
-	imageTar := container.RootUrl + "/" + imageName + ".tar"
+	mntURL := fmt.Sprintf(container.MergedDir, containerName)
+	imageTar := container.ImagePath + imageName + ".tar"
 	log.Infof("mntURL = %s, imageTar = %s", mntURL, imageTar)
 
 	if _, err := exec.Command("tar", "-czf", imageTar, "-C", mntURL, ".").CombinedOutput(); err != nil {

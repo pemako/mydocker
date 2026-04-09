@@ -2,7 +2,6 @@ package subsystems
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"strconv"
@@ -14,7 +13,7 @@ type CpuSubSystem struct {
 func (s *CpuSubSystem) Set(cgroupPath string, res *ResourceConfig) error {
 	if subsysCgroupPath, err := GetCgroupPath(s.Name(), cgroupPath, true); err == nil {
 		if res.CpuShare != "" {
-			if err := ioutil.WriteFile(path.Join(subsysCgroupPath, "cpu.shares"), []byte(res.CpuShare), 0644); err != nil {
+			if err := os.WriteFile(path.Join(subsysCgroupPath, "cpu.shares"), []byte(res.CpuShare), 0644); err != nil {
 				return fmt.Errorf("set cgroup cpu share fail %v", err)
 			}
 		}
@@ -34,7 +33,7 @@ func (s *CpuSubSystem) Remove(cgroupPath string) error {
 
 func (s *CpuSubSystem) Apply(cgroupPath string, pid int) error {
 	if subsysCgroupPath, err := GetCgroupPath(s.Name(), cgroupPath, false); err == nil {
-		if err := ioutil.WriteFile(path.Join(subsysCgroupPath, "tasks"), []byte(strconv.Itoa(pid)), 0644); err != nil {
+		if err := os.WriteFile(path.Join(subsysCgroupPath, "tasks"), []byte(strconv.Itoa(pid)), 0644); err != nil {
 			return fmt.Errorf("set cgroup proc fail %v", err)
 		}
 		return nil

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,7 +24,7 @@ var execCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// This is for nsenter callback
 		if os.Getenv(ENV_EXEC_PID) != "" {
-			log.Infof("pid callback pid %s", os.Getgid())
+			log.Infof("pid callback pid %d", os.Getgid())
 			return nil
 		}
 
@@ -80,7 +79,7 @@ func GetContainerPidByName(containerName string) (string, error) {
 // getEnvsByPid 从进程的环境变量文件获取环境变量
 func getEnvsByPid(pid string) []string {
 	path := fmt.Sprintf("/proc/%s/environ", pid)
-	contentBytes, err := ioutil.ReadFile(path)
+	contentBytes, err := os.ReadFile(path)
 	if err != nil {
 		log.Errorf("Read file %s error %v", path, err)
 		return nil

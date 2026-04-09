@@ -1,289 +1,338 @@
-# MyDocker
+# mydocker
 
-一个简化的 Docker 容器运行时实现，用于学习和理解容器技术的核心原理。
+一个用于学习容器技术核心原理的简易容器运行时，参考《自己动手写 Docker》使用 Go 重新实现。
 
-## 项目简介
+## 功能特性
 
-本项目是《自己动手写 Docker》的重构版本，使用 Go 1.25.5 重新实现，展示了容器技术的核心组件：
-
-- **Linux Namespace**：实现进程、网络、文件系统等资源的隔离
-- **Cgroups**：限制和控制容器的资源使用（CPU、内存等）
-- **Container Networking**：实现容器网络连接和管理
-- **Cobra CLI**：使用业界标准的 Cobra 框架构建命令行界面
-
-## 技术特性
-
-### 1. Namespace 隔离
-- `CLONE_NEWUTS`：主机名和域名隔离
-- `CLONE_NEWPID`：进程 ID 隔离
-- `CLONE_NEWNS`：文件系统挂载点隔离
-- `CLONE_NEWNET`：网络栈隔离
-- `CLONE_NEWIPC`：进程间通信隔离
-
-### 2. Cgroups 资源限制
-- **内存限制**：限制容器可使用的最大内存
-- **CPU 份额**：控制 CPU 使用权重
-- **CPU 核心绑定**：将容器绑定到特定 CPU 核心
-
-### 3. 容器网络
-- **Bridge 网络**：基于 Linux Bridge 的容器网络
-- **IPAM**：IP 地址自动分配和管理
-- **Veth Pair**：容器和宿主机之间的虚拟网卡对
-- **NAT**：容器访问外网的网络地址转换
+| 功能                  | 说明                                                      |
+| --------------------- | --------------------------------------------------------- |
+| Namespace 隔离        | UTS / PID / Mount / Network / IPC 五种隔离                |
+| Cgroup v1/v2 资源限制 | 内存、CPU 份额、CPU 核心绑定，自动检测内核版本            |
+| OverlayFS 文件系统    | lower / upper / work / merged 四层结构，替代已废弃的 AUFS |
+| 容器网络              | Linux Bridge + veth pair + iptables SNAT/DNAT             |
+| IPAM                  | 基于位图的子网 IP 分配，持久化到磁盘                      |
+| 网络持久化            | 网络配置重启后自动恢复                                    |
+| 端口映射              | iptables PREROUTING DNAT 规则                             |
+| exec 进入容器         | CGO + setns 系统调用，进入容器所有 Namespace              |
+| 容器镜像提交          | 将容器 merged 层打包为新的镜像 tar 包                     |
+| 数据卷挂载            | bind mount 宿主机目录到容器内                             |
+| 容器重启              | 使用保存的配置（镜像、命令、环境变量）重新启动            |
+| 容器详情              | JSON 格式输出完整容器元数据                               |
 
 ## 系统要求
 
-- **操作系统**：Linux（容器功能需要 Linux 内核支持）
-- **Go 版本**：1.25.5 或更高
-- **权限**：需要 root 权限运行（用于创建 namespace 和 cgroups）
+- **操作系统**：Linux（容器功能强依赖 Linux 内核）
+- **Go 版本**：1.21+
+- **内核版本**：建议 5.4+（OverlayFS、cgroup v2）
+- **权限**：需要 root 运行（Namespace、cgroup、iptables 操作）
+- **依赖工具**：`iptables`、`tar`、`mount`
 
-⚠️ **重要**：由于容器技术依赖 Linux 内核特性，本项目只能在 Linux 系统上运行。如果在 macOS 或 Windows 上开发，需要使用虚拟机或容器环境。
+> 在 macOS / Windows 上开发时，可交叉编译后传到 Linux 机器测试，
+> 或使用 `--privileged` Docker 容器作为测试环境（见[开发环境](#开发环境)）。
 
-## 安装
+## 快速开始
 
-### 在 Linux 上直接构建
+### 编译
 
 ```bash
-git clone https://github.com/xianlubird/mydocker.git
+git clone https://github.com/pemako/mydocker.git
 cd mydocker
-go mod tidy
 go build -o mydocker .
 ```
 
-### 在 macOS/Windows 上交叉编译
+交叉编译（macOS → Linux）：
 
 ```bash
-# 克隆项目
-git clone https://github.com/xianlubird/mydocker.git
-cd mydocker
-go mod tidy
-
-# 交叉编译为 Linux 二进制
-GOOS=linux GOARCH=amd64 go build -o mydocker .
-
-# 将二进制文件传输到 Linux 机器
-scp mydocker user@linux-host:/path/to/destination/
+GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-linux-musl-gcc \
+  go build -o mydocker .
 ```
 
-### 使用 Docker 测试（推荐用于非 Linux 系统）
+### 准备镜像
+
+mydocker 使用 tar 包作为镜像格式，默认存放在 `/var/lib/mydocker/image/`：
 
 ```bash
-# 在 Linux 容器中构建和测试
-docker run --rm -it \
-  --privileged \
-  -v $(pwd):/workspace \
-  -w /workspace \
-  golang:1.25.5 \
-  bash
-
-# 容器内执行
-go mod tidy
-go build -o mydocker .
-# 注意：需要 --privileged 才能使用 namespace 和 cgroups
+# 导出 busybox 根文件系统
+docker export $(docker create busybox) -o busybox.tar
+sudo mkdir -p /var/lib/mydocker/image/
+sudo mv busybox.tar /var/lib/mydocker/image/busybox.tar
 ```
 
-## 使用方法
-
-### 容器运行命令
+### 运行第一个容器
 
 ```bash
-# 以交互模式运行容器
+# 交互式运行
 sudo ./mydocker run -ti busybox sh
 
-# 以后台模式运行容器
-sudo ./mydocker run -d --name mycontainer busybox sh
+# 后台运行
+sudo ./mydocker run -d --name demo busybox top
 
-# 运行容器并限制资源
-sudo ./mydocker run -ti -m 100m --cpushare 512 --cpuset 0-1 busybox sh
-
-# 运行容器并挂载卷
-sudo ./mydocker run -ti -v /host/path:/container/path busybox sh
-
-# 运行容器并设置环境变量
-sudo ./mydocker run -ti -e ENV1=value1 -e ENV2=value2 busybox sh
-
-# 运行容器并配置端口映射
-sudo ./mydocker run -ti -p 8080:80 busybox sh
-
-# 组合多个选项
-sudo ./mydocker run -d --name web -m 100m -v /data:/app -e APP_ENV=prod -p 8080:80 busybox sh
+# 查看容器列表
+sudo ./mydocker ps
 ```
 
-### 容器管理命令
+## 命令参考
+
+### run — 创建并运行容器
+
+```
+sudo ./mydocker run [flags] IMAGE [COMMAND...]
+```
+
+| 参数         | 说明                                     | 示例             |
+| ------------ | ---------------------------------------- | ---------------- |
+| `-ti`        | 前台交互模式（分配 TTY）                 | `-ti`            |
+| `-d`         | 后台运行                                 | `-d`             |
+| `--name`     | 容器名称（默认随机 ID）                  | `--name web`     |
+| `-m`         | 内存限制                                 | `-m 256m`        |
+| `--cpushare` | CPU 权重（cgroup v1，默认 1024）         | `--cpushare 512` |
+| `--cpuset`   | 绑定 CPU 核心                            | `--cpuset 0-1`   |
+| `-v`         | 数据卷挂载 `宿主机路径:容器路径`         | `-v /data:/app`  |
+| `-e`         | 环境变量（可重复）                       | `-e KEY=val`     |
+| `--net`      | 连接到指定网络                           | `--net mynet`    |
+| `-p`         | 端口映射 `宿主机端口:容器端口`（可重复） | `-p 8080:80`     |
 
 ```bash
-# 列出所有容器
+# 限制资源
+sudo ./mydocker run -ti -m 128m --cpushare 512 --cpuset 0 busybox sh
+
+# 挂载数据卷 + 环境变量
+sudo ./mydocker run -d --name app -v /host/data:/data -e APP_ENV=prod busybox top
+
+# 接入网络 + 端口映射
+sudo ./mydocker run -d --name web --net mynet -p 8080:80 busybox httpd -f -p 80
+```
+
+### 容器生命周期
+
+```bash
+# 查看所有容器
 sudo ./mydocker ps
 
-# 查看容器日志
-sudo ./mydocker logs mycontainer
+# 查看后台容器日志
+sudo ./mydocker logs <name>
 
-# 在运行的容器中执行命令
-sudo ./mydocker exec mycontainer sh
+# 在运行中的容器内执行命令
+sudo ./mydocker exec <name> sh
 
-# 停止容器
-sudo ./mydocker stop mycontainer
+# 停止容器（发送 SIGTERM）
+sudo ./mydocker stop <name>
+
+# 重启容器
+sudo ./mydocker restart <name>
 
 # 删除已停止的容器
-sudo ./mydocker rm mycontainer
+sudo ./mydocker rm <name>
 
-# 将容器提交为镜像
-sudo ./mydocker commit mycontainer myimage
+# 强制删除运行中的容器
+sudo ./mydocker rm -f <name>
+
+# 查看容器详细信息（JSON）
+sudo ./mydocker inspect <name>
+
+# 将容器提交为新镜像
+sudo ./mydocker commit <name> <image-name>
 ```
 
-### 网络管理命令
+### 网络管理
 
 ```bash
-# 创建网络
-sudo ./mydocker network create --driver bridge --subnet 192.168.0.0/24 mynet
+# 创建 bridge 网络
+sudo ./mydocker network create --driver bridge --subnet 172.18.0.0/24 mynet
 
-# 列出所有网络
+# 查看所有网络
 sudo ./mydocker network list
 
 # 删除网络
 sudo ./mydocker network remove mynet
 ```
 
-### run 命令参数
-
-- `-ti, -t`：启用交互式终端（TTY）
-- `-d`：后台模式运行容器
-- `--name`：指定容器名称
-- `-m`：内存限制（例如：100m, 1g）
-- `--cpushare`：CPU 份额权重（默认 1024）
-- `--cpuset`：绑定的 CPU 核心（例如：0, 0-2, 0,2,4）
-- `-v`：卷挂载（格式：宿主机路径:容器路径）
-- `-e`：设置环境变量（可多次使用）
-- `--net`：指定容器网络
-- `-p`：端口映射（格式：宿主机端口:容器端口，可多次使用）
-```
-
-## 项目架构
+## 项目结构
 
 ```
 mydocker/
-├── main.go                          # 程序入口（24 行）
-├── cmd/
-│   ├── root.go                      # 根命令定义
-│   ├── run.go                       # 运行容器命令
-│   ├── init.go                      # 初始化命令
-│   └── network.go                   # 网络管理命令
-├── container/
-│   ├── container_process.go         # 通用代码
-│   ├── container_process_linux.go   # Linux 特定的进程创建
-│   ├── container_process_stub.go    # 非 Linux 平台 stub
-│   ├── init_linux.go                # 容器初始化进程
-│   └── init_stub.go                 # 非 Linux 平台 stub
-├── cgroups/
-│   ├── cgroup_manager.go            # Cgroups 管理器
-│   └── subsystems/
-│       ├── subsystem.go             # 子系统接口定义
-│       ├── memory.go                # 内存子系统
-│       ├── cpu.go                   # CPU 份额子系统
-│       ├── cpuset.go                # CPU 核心绑定子系统
-│       └── utils.go                 # 工具函数
-├── network/
-│   ├── network.go                   # 网络核心接口
-│   ├── ipam.go                      # IP 地址管理
-│   ├── bridge_linux.go              # Bridge 网络驱动（Linux）
-│   └── bridge_stub.go               # Bridge stub（非 Linux）
-├── go.mod
-└── README.md
+├── main.go                           # 程序入口
+├── doc.go                            # 包文档
+│
+├── cmd/                              # CLI 子命令（cobra）
+│   ├── root.go                       # 根命令 & 子命令注册
+│   ├── run.go                        # run：创建并运行容器
+│   ├── init.go                       # init：容器内部初始化（内部命令）
+│   ├── stop.go                       # stop：停止容器
+│   ├── rm.go                         # rm：删除容器（支持 -f）
+│   ├── ps.go                         # ps：列出容器
+│   ├── exec.go                       # exec：进入容器执行命令
+│   ├── logs.go                       # logs：查看容器日志
+│   ├── inspect.go                    # inspect：查看容器详情
+│   ├── restart.go                    # restart：重启容器
+│   ├── commit.go                     # commit：提交容器为镜像
+│   └── network.go                    # network：网络子命令组
+│
+├── container/                        # 容器核心逻辑
+│   ├── container_info.go             # 容器元数据 CRUD、生命周期管理
+│   ├── container_process_linux.go    # 父进程创建（Namespace clone、OverlayFS）
+│   ├── container_process_stub.go     # 非 Linux 平台 stub
+│   ├── init_linux.go                 # 子进程初始化（mount、pivotRoot、exec）
+│   ├── init_stub.go                  # 非 Linux 平台 stub
+│   ├── volume.go                     # OverlayFS 文件系统构建与清理
+│   └── utils.go                      # 工具函数（PathExists、KillProcess 等）
+│
+├── cgroups/                          # Cgroup 资源限制
+│   ├── cgroup_manager.go             # CgroupManager 接口 + 工厂函数（v1/v2 自动选择）
+│   ├── cgroup_manager_v1.go          # Cgroup v1 实现
+│   ├── cgroup_manager_v2.go          # Cgroup v2 实现
+│   ├── util.go                       # IsCgroup2UnifiedMode 检测
+│   ├── util_stub.go                  # 非 Linux 平台 stub
+│   ├── subsystems/                   # Cgroup v1 子系统
+│   │   ├── subsystem.go              # Subsystem 接口 + ResourceConfig
+│   │   ├── memory.go                 # memory.limit_in_bytes
+│   │   ├── cpu.go                    # cpu.shares
+│   │   ├── cpuset.go                 # cpuset.cpus
+│   │   └── utils.go                  # 挂载点查找（/proc/self/mountinfo）
+│   └── fs2/                          # Cgroup v2 子系统
+│       ├── subsystems.go             # 子系统列表
+│       ├── defaultpath.go            # UnifiedMountpoint
+│       ├── utils.go                  # getCgroupPath + applyCgroup（cgroup.procs）
+│       ├── memory.go                 # memory.max
+│       ├── cpu.go                    # cpu.max（不支持 cpu.shares）
+│       └── cpuset.go                 # cpuset.cpus
+│
+├── network/                          # 容器网络
+│   ├── network.go                    # Network/Endpoint/Driver 定义 + CRUD + 持久化
+│   ├── ipam.go                       # IPAM 位图算法（分配/释放 IP）
+│   ├── bridge_linux.go               # BridgeNetworkDriver（Linux）
+│   ├── bridge_stub.go                # 非 Linux 平台 stub
+│   ├── connect_linux.go              # enterContainerNetNS + IP 路由 + 端口映射
+│   └── connect_stub.go               # 非 Linux 平台 stub
+│
+└── nsenter/                          # Namespace 进入（CGO）
+    ├── nsenter.go                    # C 构造函数：在 Go runtime 前执行 setns
+    └── nsenter_stub.go               # 非 Linux/CGO 平台 stub
 ```
 
-### 代码组织
+## 核心原理
 
-- **main.go**：程序唯一入口，负责初始化 CLI 应用（仅 24 行代码）
-- **cmd/**：命令包，每个命令独立文件，职责清晰
-  - `root.go`：根命令和全局配置
-  - `run.go`：容器运行逻辑（77 行）
-  - `init.go`：容器初始化（19 行）
-  - `network.go`：网络管理（53 行）
-- **container/**：容器进程管理，包括 namespace 隔离
-- **cgroups/**：资源限制管理，实现 CPU、内存等资源控制
-- **network/**：容器网络管理，包括 Bridge 驱动和 IPAM
+### 容器启动流程
 
-## 核心实现
-
-### 1. 进程隔离
-使用 `syscall.SysProcAttr` 的 `Cloneflags` 创建新的 namespace：
-
-```go
-cmd.SysProcAttr = &syscall.SysProcAttr{
-    Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | 
-                syscall.CLONE_NEWNS | syscall.CLONE_NEWNET | 
-                syscall.CLONE_NEWIPC,
-}
+```
+mydocker run busybox sh
+      │
+      ▼
+NewParentProcess()               ← 父进程（mydocker）
+  clone(NEWUTS|NEWPID|NEWNS|NEWNET|NEWIPC)
+  NewWorkSpace()                 ← 创建 OverlayFS 四层目录并挂载
+  cmd.Dir = merged/              ← 设置工作目录为容器根
+  parent.Start()                 ← fork 子进程
+      │
+      ▼
+RunContainerInitProcess()        ← 子进程（mydocker init）
+  readUserCommand()              ← 从管道读取命令（"sh"）
+  setUpMount()                   ← pivot_root + 挂载 /proc /dev
+  syscall.Exec("sh", ...)        ← 替换自身为用户进程
 ```
 
-### 2. 资源限制
-通过写入 cgroup 文件系统实现资源控制：
+### OverlayFS 目录结构
 
-```go
-// 限制内存
-ioutil.WriteFile("/sys/fs/cgroup/memory/mydocker-cgroup/memory.limit_in_bytes", 
-                  []byte("100m"), 0644)
+```
+/var/lib/mydocker/
+├── image/
+│   └── busybox.tar              # 镜像 tar 包
+└── overlay2/
+    └── <containerID>/
+        ├── lower/               # 只读层（镜像解压）
+        ├── upper/               # 读写层（容器内写操作）
+        ├── work/                # OverlayFS 工作目录
+        └── merged/              # 联合挂载点（容器根目录）
 
-// 限制 CPU 份额
-ioutil.WriteFile("/sys/fs/cgroup/cpu/mydocker-cgroup/cpu.shares", 
-                  []byte("512"), 0644)
+# 挂载命令
+mount -t overlay overlay \
+  -o lowerdir=lower,upperdir=upper,workdir=work \
+  merged
 ```
 
-### 3. 进程通信
-使用匿名管道在父子进程间传递命令：
+### 容器网络架构
 
-```go
-readPipe, writePipe, _ := os.Pipe()
-cmd.ExtraFiles = []*os.File{readPipe}
-// 父进程通过 writePipe 发送命令
-// 子进程从文件描述符 3 读取命令
+```
+宿主机                              容器
+──────────────────────────────────────────────────
+                    veth pair
+  Bridge (mynet) ←──────────── eth0 (cif-xxxxx)
+  172.18.0.1                    172.18.0.2/24
+
+iptables:
+  POSTROUTING MASQUERADE   ← 容器访问外网（SNAT）
+  PREROUTING DNAT 8080→80  ← 端口映射（-p 8080:80）
 ```
 
-## 功能特性
+### exec 进入容器原理
 
-### 已实现功能
+```
+mydocker exec <name> sh
+      │
+      ├─ 读取容器 PID，设置环境变量 mydocker_pid=<pid>
+      │
+      ▼
+/proc/self/exe exec           ← 重新执行自身
+      │
+      ▼  (CGO __attribute__((constructor)) 在 Go runtime 前触发)
+enter_namespace()             ← C 函数
+  setns(/proc/<pid>/ns/mnt)
+  setns(/proc/<pid>/ns/net)
+  setns(/proc/<pid>/ns/uts)
+  setns(/proc/<pid>/ns/ipc)
+  setns(/proc/<pid>/ns/pid)
+  execvp("sh")
+```
 
-- [x] **基本容器运行**：支持交互式和后台运行模式
-- [x] **Namespace 隔离**：实现 5 种 namespace 隔离
-- [x] **Cgroups 资源限制**：支持内存、CPU 份额、CPU 核心绑定
-- [x] **容器管理**：ps、logs、stop、rm 等完整生命周期管理
-- [x] **容器执行**：exec 命令在运行的容器中执行命令（使用 nsenter）
-- [x] **镜像管理**：commit 命令将容器提交为镜像
-- [x] **卷挂载**：支持宿主机目录挂载到容器（基于 AUFS）
-- [x] **环境变量**：支持设置容器环境变量
-- [x] **网络管理**：创建、列出、删除容器网络
-- [x] **端口映射**：支持端口映射配置
-- [x] **容器命名**：支持自定义容器名称
-- [x] **Cobra CLI**：使用业界标准框架，提供清晰的命令结构
+## 数据目录
 
-### 待实现功能
+| 路径                                         | 说明                           |
+| -------------------------------------------- | ------------------------------ |
+| `/var/run/mydocker/<name>/config.json`       | 容器元数据（PID、状态、IP 等） |
+| `/var/run/mydocker/<name>/container.log`     | 后台容器标准输出日志           |
+| `/var/lib/mydocker/image/<name>.tar`         | 镜像 tar 包                    |
+| `/var/lib/mydocker/overlay2/<id>/`           | 容器 OverlayFS 目录            |
+| `/var/lib/mydocker/network/network/<name>`   | 网络配置（JSON）               |
+| `/var/lib/mydocker/network/ipam/subnet.json` | IPAM 分配状态                  |
 
-- [ ] AUFS/OverlayFS 文件系统完整实现
-- [ ] 容器网络连接和通信
-- [ ] 完整的镜像管理（镜像存储、导入导出）
-- [ ] 容器日志轮转
-- [ ] 容器资源统计
-- [ ] 安全加固（seccomp、capability 等）
+## 开发环境
 
-## 注意事项
+macOS / Windows 上可使用 Docker 特权容器作为测试环境：
 
-⚠️ **本项目仅用于学习目的，不适用于生产环境！**
+```bash
+docker run --rm -it --privileged \
+  -v $(pwd):/workspace -w /workspace \
+  golang:1.21 bash
 
-- 需要在 Linux 系统上运行
-- 需要 root 权限
-- 不包含安全加固措施
-- 功能简化，未实现完整的容器特性
+# 容器内
+go build -o mydocker .
+# 准备镜像后即可测试
+```
+
+## 依赖
+
+| 包                                                                       | 用途                   |
+| ------------------------------------------------------------------------ | ---------------------- |
+| [github.com/spf13/cobra](https://github.com/spf13/cobra)                 | CLI 框架               |
+| [github.com/sirupsen/logrus](https://github.com/sirupsen/logrus)         | 结构化日志             |
+| [github.com/vishvananda/netlink](https://github.com/vishvananda/netlink) | Linux 网络设备操作     |
+| [github.com/vishvananda/netns](https://github.com/vishvananda/netns)     | Network Namespace 操作 |
+
+## 延伸阅读
+
+深入了解各核心技术的原理与实现细节，请参阅 [docs/docker-internals.md](docs/docker-internals.md)，内容涵盖：
+
+- Namespace / Cgroups / OverlayFS 原理精讲
+- 容器进程管道通信与 pivot_root 详解
+- nsenter + CGO setns 进入 Namespace 的实现原理
+- 从零实现 mini-Docker 的分步骤教程（Step 1–10）
+- 本项目与真实 Docker 的技术对比
 
 ## 参考资料
 
-- 《自己动手写 Docker》
-- [Linux Namespaces](https://man7.org/linux/man-pages/man7/namespaces.7.html)
-- [Linux Control Groups](https://www.kernel.org/doc/Documentation/cgroup-v1/cgroups.txt)
-
-## 许可证
-
-本项目基于原始项目继承相应许可证。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
+- 《自己动手写 Docker》— 陈显鹭
+- [Linux man-pages: namespaces(7)](https://man7.org/linux/man-pages/man7/namespaces.7.html)
+- [Linux man-pages: cgroups(7)](https://man7.org/linux/man-pages/man7/cgroups.7.html)
+- [Kernel docs: overlayfs](https://www.kernel.org/doc/html/latest/filesystems/overlayfs.html)
+- [Kernel docs: cgroup-v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
+- [lixd/mydocker](https://github.com/lixd/mydocker)

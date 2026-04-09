@@ -13,6 +13,7 @@ import (
 	"github.com/pemako/mydocker/cgroups"
 	"github.com/pemako/mydocker/cgroups/subsystems"
 	"github.com/pemako/mydocker/container"
+	nw "github.com/pemako/mydocker/network"
 )
 
 // runCmd 运行容器命令
@@ -92,7 +93,7 @@ func Run(tty bool, comArray []string, res *subsystems.ResourceConfig, containerN
 	}
 
 	// Record container info
-	if _, err := container.RecordContainerInfo(parent.Process.Pid, comArray, containerName, containerID, volume); err != nil {
+	if _, err := container.RecordContainerInfo(parent.Process.Pid, comArray, containerName, containerID, volume, imageName, envSlice, network); err != nil {
 		log.Errorf("Record container info error %v", err)
 		return
 	}
@@ -103,11 +104,31 @@ func Run(tty bool, comArray []string, res *subsystems.ResourceConfig, containerN
 	cgroupManager.Set(res)
 	cgroupManager.Apply(parent.Process.Pid)
 
+	// 连接容器到网络
+	if network != "" {
+		info, err := container.GetContainerInfoByName(containerName)
+		if err != nil {
+			log.Errorf("Get container info error %v", err)
+			return
+		}
+		info.PortMapping = portMapping
+		ip, err := nw.Connect(network, info)
+		if err != nil {
+			log.Errorf("Connect network error %v", err)
+		} else {
+			// 将分配到的 IP 写回容器信息
+			info.IP = ip.String()
+			if err = container.UpdateContainerInfo(info); err != nil {
+				log.Errorf("Update container info error %v", err)
+			}
+		}
+	}
+
 	sendInitCommand(comArray, writePipe)
 
 	if tty {
 		parent.Wait()
-		container.DeleteWorkSpace(volume, containerName)
+		container.DeleteWorkSpace(containerName, volume)
 		container.DeleteContainerInfo(containerName)
 	}
 }
